@@ -1,0 +1,11 @@
+# pycharm
+.idea/
+
+# build files and dirs
+build/
+dist/
+.pytest_cache/
+rfcounterfactuals.egg-info/
+
+# Virtual enviroment
+venv/
