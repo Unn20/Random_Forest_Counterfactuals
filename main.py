@@ -43,5 +43,3 @@ if __name__ == '__main__':
     print(f"Total counterfactuals found: {total_cfs}")
 
     print(f"Finished in {total_time: 1.4f}s")
-
-    # TODO: Mamy positive paths i tweaking, teraz reszta algorytmu ;)
