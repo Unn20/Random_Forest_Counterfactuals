@@ -12,16 +12,19 @@ with open(path.join(HERE, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
 setup(
-    name='rfcounterfactuals',
-    packages=find_packages(include=['rfcounterfactuals']),
+    name='rf_counterfactuals',
+    packages=find_packages(),
     version='0.1.0',
     description='Random Forest counterfactual explanation',
+    keywords='counterfactual, explainable, xai',
     long_description=long_description,
     long_description_content_type="text/markdown",
     author='Maciej Leszczyk',
     author_email="maciej.leszczyk98@email.com",
+    url='https://github.com/Unn20/Random_Forest_Counterfactuals',
     license='MIT',
-    install_requires=['numpy>=1.22.4', 'pandas>=1.4.2'],
+    python_requires='>=3.9',
+    install_requires=['numpy==1.23.0', 'pandas==1.4.3', 'scikit-learn==1.1.1', 'scipy==1.8.1', 'joblib=1.1.0'],
     setup_requires=['pytest-runner==6.0.0'],
     tests_require=['pytest==7.1.2'],
     test_suite='tests',

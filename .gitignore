@@ -5,7 +5,7 @@
 build/
 dist/
 .pytest_cache/
-rfcounterfactuals.egg-info/
+rf_counterfactuals.egg-info
 
 # Virtual enviroment
 venv/
