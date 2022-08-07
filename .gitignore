@@ -10,4 +10,7 @@ rf_counterfactuals.egg-info
 # Virtual enviroment
 venv/
 
+# Examples (jupyter notebook)
+examples/.ipynb_checkpoints
+
 main.py
