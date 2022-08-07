@@ -9,3 +9,5 @@ rf_counterfactuals.egg-info
 
 # Virtual enviroment
 venv/
+
+main.py

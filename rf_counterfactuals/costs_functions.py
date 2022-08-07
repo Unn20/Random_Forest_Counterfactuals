@@ -3,18 +3,39 @@ import math
 import numpy as np
 import pandas as pd
 from scipy import spatial, stats
+from sklearn.neighbors import NearestNeighbors
 
 
-def unmatched_components_rate(X: np.array, X_prime: np.array, eps=1e-4):
-    unmatched_components = 0
+def unmatched_components(X: np.array, X_prime: np.array, eps:float):
+    result = 0
     for feature_id in range(len(X)):
         if abs(X[feature_id] - X_prime[feature_id]) > eps:
-            unmatched_components += 1
-    return unmatched_components / len(X) if len(X) > 0 else 0.0
+            result += 1
+    return result
+
+
+def unmatched_components_distance(X: np.array, X_prime: np.array, eps=1e-4):
+    return unmatched_components(X, X_prime, eps) / len(X) if len(X) > 0 else 0.0
+
+
+def heterogeneous_euclidean_overlap_metric(X: np.array, X_prime: np.array, feature_range: np.array, cat_features: list, non_cat_features: list):
+    """ https://axon.cs.byu.edu/~randy/jair/wilson2.html """
+    result = 0.0
+    result += unmatched_components(X[cat_features], X_prime[cat_features], eps=1e-4)
+    result += np.sum(np.power(np.divide(
+        np.absolute(X[non_cat_features] - X_prime[non_cat_features]), feature_range[non_cat_features],
+        out=np.ones_like(X[non_cat_features], dtype=np.float), where=feature_range[non_cat_features] != 0.0), 2))
+    return np.sqrt(result)
 
 
 def euclidean_distance(X: np.array, X_prime: np.array):
     return np.linalg.norm(X - X_prime)
+
+
+def euclidean_categorical_distance(X: np.array, X_prime: np.array, cat_features: list, non_cat_features: list):
+    result = euclidean_distance(X[non_cat_features], X_prime[non_cat_features])\
+             + unmatched_components(X[cat_features], X_prime[cat_features], eps=1e-4)
+    return result
 
 
 def cosine_distance(X: np.array, X_prime: np.array):
@@ -38,4 +59,13 @@ def pearson_correlation_distance(X: np.array, X_prime: np.array):
     return rho_d if not math.isnan(rho) else 1.0
 
 
+def implausibility_single(X_prime: np.array, nbrs: NearestNeighbors, k=3):
+    distances, indices = np.squeeze(nbrs.kneighbors(X_prime.reshape(1, -1), n_neighbors=k, return_distance=True))
+    score = np.mean(distances)
+    return score
 
+
+def implausibility(X_primes: np.array, nbrs: NearestNeighbors):
+    distances, indices = np.squeeze(nbrs.kneighbors(X_primes, n_neighbors=1, return_distance=True))
+    score = np.mean(distances)
+    return score

@@ -7,26 +7,25 @@ import warnings
 from functools import partial
 from joblib import Parallel, delayed
 import itertools
+import sys
 
-from .costs_functions import *
-from .scores_functions import *
+from costs_functions import *
+from scores_functions import *
 
 class RandomForestExplainer:
     available_loss_functions = {
         'euclidean': lambda x, x_prime: euclidean_distance(x, x_prime),
+        'euclidean_categorical': lambda x, x_prime, cat_features, non_cat_features: euclidean_categorical_distance(x, x_prime, cat_features, non_cat_features),
+        'hoem': lambda x, x_prime, feature_range, cat_features, non_cat_features: heterogeneous_euclidean_overlap_metric(x, x_prime, feature_range, cat_features, non_cat_features),
         'cosine': lambda x, x_prime: cosine_distance(x, x_prime),
         'jaccard': lambda x, x_prime: jaccard_distance(x, x_prime),
         'pearson_correlation': lambda x, x_prime: pearson_correlation_distance(x, x_prime),
-        'unmatched_components': lambda x, x_prime: unmatched_components_rate(x, x_prime),
-    }
-    available_score_functions = {
-        'k_nearest_neighborhood': lambda x_prime, y, label, nbrs:
-        k_nearest_neighborhood(x_prime, y, label, nbrs),
-        'n_sigma_random_neighborhood': lambda x_prime, trained_model, sigma, n:
-        n_sigma_random_neighborhood(x_prime, trained_model, sigma, n),
+        'unmatched_components': lambda x, x_prime: unmatched_components_distance(x, x_prime),
+        'k_nearest_neighborhood': lambda x_prime, label, nbrs, y_train: k_nearest_neighborhood(x_prime, label, nbrs, y_train),
+        'implausibility_single': lambda x_prime, nbrs, k: implausibility_single(x_prime, nbrs, k),
     }
 
-    def __init__(self, model: RandomForestClassifier):
+    def __init__(self, model: RandomForestClassifier, X_train, y_train, categorical_features=None, frozen_features=None, left_frozen_features=None, right_frozen_features=None):
         self.rf_model = model
         self.decision_trees = model.estimators_
         self.classes = list(model.classes_)
@@ -34,14 +33,44 @@ class RandomForestExplainer:
         self.n_features = model.n_features_in_
         self.positive_paths = dict()
 
-    def get_positive_paths_for_label(self, label):
-        if label not in self.classes:
-            raise Exception("This class label doesn't belong to the dataset, on which Random Forest was trained.")
-        if label not in self.positive_paths:
-            self.positive_paths[label] = _get_positive_paths(self.rf_model, self.get_class_for_dt(label))
-        return self.positive_paths[label]
+        self.X_train = X_train
+        self.y_train = y_train
 
-    def explain(self, X, label: int, eps=0.1, metrics=('euclidean',), k=5, sigma=0.1, n=100, n_jobs=-1):
+        X_train_mean = np.mean(X_train, axis=0)
+        X_train_std = np.std(X_train, axis=0)
+        X_train_max = np.max(X_train, axis=0)
+        X_train_min = np.min(X_train, axis=0)
+        X_train_range = X_train_max - X_train_min
+        self.X_train_stats = {'min': X_train_min, 'max': X_train_max, 'range': X_train_range,
+                              'mean': X_train_mean, 'std': X_train_std, 'labels': y_train}
+
+        self.nbrs = {}
+        self.nbrs_same_label = {}
+
+        categorical_features = [] if categorical_features is None else categorical_features
+        frozen_features = [] if frozen_features is None else frozen_features
+        left_frozen_features = [] if left_frozen_features is None else left_frozen_features
+        right_frozen_features = [] if right_frozen_features is None else right_frozen_features
+
+        for name, list_parameter in {'categorical_features': categorical_features, 'frozen_features': frozen_features,
+                                     'left_frozen_features': left_frozen_features, 'right_frozen_features': right_frozen_features}.items():
+            if type(list_parameter) != list:
+                raise Exception(f"'{name}' parameter must be a list")
+            for feature_index in list_parameter:
+                if type(feature_index) != int or (feature_index < 0 or feature_index > self.n_features-1):
+                    raise Exception(f"Feature index '{feature_index}' in parameter '{name}' must be integer in range [0, {self.n_features-1}]")
+
+        self.categorical_features = sorted(list(set(categorical_features)))
+        self.non_categorical_features = [i for i in range(self.X_train.shape[1]) if i not in self.categorical_features]
+        # We treat frozen_features as they are left_ and right_ frozen, so it's simpler
+        for feature_index in frozen_features:
+            left_frozen_features.append(feature_index)
+            right_frozen_features.append(feature_index)
+        self.left_frozen_features = sorted(list(set(left_frozen_features)))
+        self.right_frozen_features = sorted(list(set(right_frozen_features)))
+
+    def explain_with_single_metric(self, X, label, limit=1, eps=0.1, metric='euclidean', k=5, to_single_df=False, n_jobs=-1):
+        """ Explain given instances with single metric """
         if eps <= 0.0:
             raise Exception(f"Eps parameter={eps} (must be greater than 0.0).")
         if X.ndim == 1:
@@ -51,90 +80,242 @@ class RandomForestExplainer:
             pass
         else:
             raise Exception(f"Incorrect dimensions of X={X.ndim} (should be 2).")
-        params = {'k': k, 'sigma': sigma, 'n': n}
-        # Precalculations
-        positive_paths = self.get_positive_paths_for_label(label)
-        feature_eps_mul_std = eps * np.std(X, axis=0)
-        feature_means = np.mean(X, axis=0)
 
         y_hat_ensemble = self.rf_model.predict(X)
         wrong_label = np.where(y_hat_ensemble != label)[0]
         X_wrong_label = X.iloc[wrong_label, :]
 
+        counterfactuals, costs_per_row = self._get_artificial_counterfactuals(X, wrong_label, y_hat_ensemble, label, 0.1, (metric,), k, n_jobs=n_jobs)
+
+        # Put whole calculation results into one DataFrame
+        cfs_index = np.zeros(X.shape[0])
+        cfs_index[wrong_label] = 1
+        result = self._select_counterfactuals(X_wrong_label, counterfactuals, costs_per_row, limit, cfs_index)
+
+        if to_single_df:
+            result = pd.concat(result, ignore_index=False)
+        return result
+
+    def explain_with_multiple_metrics(self, X, label, limit=1, eps=0.1, metrics=('unmatched_components', 'euclidean'), k=5, to_single_df=False, n_jobs=-1):
+        """ Explain given instances with multiple metrics """
+        if eps <= 0.0:
+            raise Exception(f"Eps parameter={eps} (must be greater than 0.0).")
+        if X.ndim == 1:
+            warnings.warn(f"X has ndim={X.ndim}. Reshaping: X = X.values.reshape(1, -1)", UserWarning)
+            X = X.values.reshape(1, -1)
+        elif X.ndim == 2:
+            pass
+        else:
+            raise Exception(f"Incorrect dimensions of X={X.ndim} (should be 2).")
+
+        y_hat_ensemble = self.rf_model.predict(X)
+        wrong_label = np.where(y_hat_ensemble != label)[0]
+        X_wrong_label = X.iloc[wrong_label, :]
+
+        counterfactuals, costs_per_row = self._get_artificial_counterfactuals(X, wrong_label, y_hat_ensemble, label, 0.1, metrics, k, n_jobs=n_jobs)
+
+        cfs_index = np.zeros(X.shape[0])
+        cfs_index[wrong_label] = 1
+        result = self._select_counterfactuals_pareto_front(X_wrong_label, counterfactuals, costs_per_row, cfs_index)
+        if to_single_df:
+            result = pd.concat(result, ignore_index=False)
+        return result
+
+
+    def _get_positive_paths_for_label(self, label):
+        """ Get positive path for given label and save paths to cache memory """
+        if label not in self.classes:
+            raise Exception(f"This label: '{label}' doesn't belong to the dataset classes: '{self.classes}'")
+        if label not in self.positive_paths:
+            self.positive_paths[label] = _get_positive_paths(self.rf_model, self.get_class_for_dt(label))
+        return self.positive_paths[label]
+
+    def _get_artificial_counterfactuals(self, X, wrong_label, y_hat_ensemble, label, eps, metrics, k, n_jobs=-1):
+        """ Get counterfactual candidates """
+        # Precalculations
+        X_wrong_label = X.iloc[wrong_label, :]
+
+        # TODO: It can be calculated concurrently
+        sys.stdout.write(
+            f"[1/3] Extracting positive paths.\n")
+        positive_paths = self._get_positive_paths_for_label(label)
+        feature_eps_mul_std = eps * self.X_train_stats['std']
+
+        sys.stdout.write(
+            f"[2/3] Generating counterfactual examples for each tree. Total number of tasks: {len(self.decision_trees)}\n")
         results_per_tree = Parallel(n_jobs=n_jobs, verbose=10, prefer='processes')(
-            delayed(partial(_tweak_features, X_wrong_label, label, self.classes, self.rf_model, feature_means,
-                            feature_eps_mul_std))(dt, pp) for dt, pp in zip(self.decision_trees, positive_paths))
+            delayed(partial(_tweak_features, X_wrong_label, label, self.classes, self.rf_model, feature_eps_mul_std,
+                            self.categorical_features))(dt, pp) for dt, pp in zip(self.decision_trees, positive_paths))
 
         # results_per_tree have shape (trees_no, X.shape[0], CFs) so we need to concat CFs along 0 dimension
         rpt_iterator = iter(np.array(results_per_tree, dtype=object).T)
-        counterfactuals = [pd.DataFrame(itertools.chain.from_iterable(next(rpt_iterator))) for no in range(X.shape[0]) if no in wrong_label]
+        counterfactuals = [pd.DataFrame(itertools.chain.from_iterable(next(rpt_iterator))).drop_duplicates() for no in range(X.shape[0]) if
+                           no in wrong_label]
 
-        loss_functions = {metric: func for metric, func in RandomForestExplainer.available_loss_functions.items()
-                          if metric in metrics}
-        costs_per_row = []
-        if len(loss_functions) > 0:
-            costs_per_row = Parallel(n_jobs=n_jobs, verbose=10, prefer='processes')(
-                delayed(partial(_calculate_distance, loss_functions))
-                (x, x_primes) for x, x_primes in zip(X_wrong_label.values, counterfactuals))
+        params = {'k': k, 'y_hat_ensemble': y_hat_ensemble, 'label': label, 'y_train': self.y_train.values}
 
-        score_functions = {metric: func for metric, func in RandomForestExplainer.available_score_functions.items()
-                           if metric in metrics}
-        if 'k_nearest_neighborhood' in score_functions:
-            nbrs = NearestNeighbors(n_neighbors=params['k'], algorithm='ball_tree')
-            nbrs.fit(X.values)
-            params['nbrs'] = nbrs
-        else:
-            params['nbrs'] = None
+        if 'k_nearest_neighborhood' in metrics:
+            if k not in self.nbrs:
+                self.nbrs[k] = NearestNeighbors(n_neighbors=k, algorithm='ball_tree',
+                                                metric=heterogeneous_euclidean_overlap_metric,
+                                                metric_params={'feature_range': self.X_train_stats['range'],
+                                               'cat_features': self.categorical_features,
+                                               'non_cat_features': self.non_categorical_features})
+                self.nbrs[k].fit(self.X_train.values)
+            params['nbrs'] = self.nbrs[k]
 
-        scores_per_row = []
-        if len(score_functions) > 0:
-            scores_per_row = Parallel(n_jobs=n_jobs, verbose=10, prefer='processes')(
-                delayed(partial(_calculate_score, score_functions, params, self.rf_model, X, y_hat_ensemble, label))
-                (x_primes) for x_primes in counterfactuals)
+        if 'implausibility_single' in metrics:
+            if (label, k) not in self.nbrs_same_label:
+                self.nbrs_same_label[(label, k)] = NearestNeighbors(n_neighbors=k, algorithm='ball_tree',
+                                                metric=heterogeneous_euclidean_overlap_metric,
+                                                metric_params={'feature_range': self.X_train_stats['range'],
+                                               'cat_features': self.categorical_features,
+                                               'non_cat_features': self.non_categorical_features})
+                X_train_same_labels = self.X_train[self.y_train == label]
+                self.nbrs_same_label[(label, k)].fit(X_train_same_labels.values)
+            params['nbrs_same_label'] = self.nbrs_same_label[(label, k)]
 
-        # Put whole calculation results into one DataFrame
+        params['loss_functions_names'] = metrics
+        params['loss_functions'] = {k: v for k, v in RandomForestExplainer.available_loss_functions.items() if
+                                    k in metrics}
+
+        sys.stdout.write(f"[3/3] Calculating loss function. Total number of tasks: {len(counterfactuals)}\n")
+        costs_per_row = Parallel(n_jobs=n_jobs if len(counterfactuals) * 4 > n_jobs else 1, verbose=10, prefer='processes')(
+            delayed(partial(_calculate_loss, params, self.X_train_stats['range'], self.X_train_stats['mean'],
+                            self.X_train_stats['std'], self.categorical_features, self.non_categorical_features))
+            (x[1], x_primes) for x, x_primes in zip(X_wrong_label.iterrows(), counterfactuals))
+
+        return counterfactuals, costs_per_row
+
+
+    def _select_counterfactuals(self, original_rows, counterfactuals, costs, limit, cfs_index):
+        """ Select first 'limit' counterfactual examples that meet certain constraints """
         result = []
-        for no, cfs in enumerate(counterfactuals):
-            cfs["X_index"] = cfs.index
-            if len(costs_per_row) > 0:
-                for metric, value in costs_per_row[no].items():
-                    cfs[metric] = value
-            if len(scores_per_row) > 0:
-                for metric, value in scores_per_row[no].items():
-                    cfs[metric] = value
-            result.append(cfs)
-        result = pd.concat(result, ignore_index=True)
+        cfs_counter = 0
+        for no, is_csf in enumerate(cfs_index):
+            if is_csf:
+                cfs = counterfactuals[cfs_counter]
+                cfs['_loss'] = costs[cfs_counter]
+                cfs['_loss'] = cfs['_loss'].apply(lambda x: x[0])
+
+                # Check actionability of counterfactual
+                cfs = cfs[cfs.apply(lambda row: _check_row_frozen_validity(original_rows.iloc[cfs_counter, :].values, row.values,
+                                                                          self.left_frozen_features,
+                                                                          self.right_frozen_features), axis=1)]
+                if len(cfs) == 0:
+                    # If there are no candidates, continue the loop
+                    result.append(pd.DataFrame({}))
+                    continue
+
+                sorted_cfs = cfs.sort_values('_loss')
+                sorted_cfs = sorted_cfs.drop('_loss', axis=1)
+                result.append(sorted_cfs.iloc[:limit, :])
+                cfs_counter += 1
+            else:
+                result.append(pd.DataFrame({}))
+
+        return result
+
+    def _select_counterfactuals_pareto_front(self, original_rows, counterfactuals, costs, cfs_index):
+        """ Select counterfactual examples from first pareto front that meet certain constraints """
+        result = []
+        cfs_counter = 0
+        for no, is_csf in enumerate(cfs_index):
+            if is_csf:
+                cfs = counterfactuals[cfs_counter]
+
+                to_process = np.ones(cfs.shape[0], dtype=bool)
+
+                # Check actionability of counterfactual
+                actionable = cfs.apply(
+                    lambda row: _check_row_frozen_validity(original_rows.iloc[cfs_counter, :].values, row.values,
+                                                           self.left_frozen_features,
+                                                           self.right_frozen_features), axis=1)
+
+                to_process[~actionable] = False
+
+                cfs = cfs.iloc[to_process, :]
+
+                cfs_costs = np.array(costs[cfs_counter])
+                pareto_mask = _is_pareto_efficient(cfs_costs[to_process], return_mask=True)
+
+                result.append(cfs.iloc[pareto_mask, :])
+                cfs_counter += 1
+            else:
+                result.append(pd.DataFrame({}))
 
         return result
 
 
-def _calculate_distance(distance_functions: dict, X_row: np.array, X_primes: pd.DataFrame):
-    result = {metric: [] for metric in distance_functions.keys()}
-    for ind, X_prime in X_primes.iterrows():
-        for metric, func in distance_functions.items():
-            result[metric].append(func(X_row, X_prime.values))
+def _check_row_frozen_validity(x, cf, left_frozen, right_frozen):
+    """ Check actionability of counterfactual """
+    for left_frozen_feature in left_frozen:
+        if cf[left_frozen_feature] < x[left_frozen_feature]:
+            return False
+    for right_frozen_feature in right_frozen:
+        if cf[right_frozen_feature] > x[right_frozen_feature]:
+            return False
+    return True
+
+
+def _calculate_loss(params: dict, feature_range, feature_means, feature_std, categorical_features: list, non_categorical_features: list, X_row: np.array, X_primes: pd.DataFrame):
+    """ Calculate given loss metrics for counterfactual """
+    result = []
+    zscore_normalized_X_primes = (X_primes - feature_means) / feature_std
+    zscore_normalized_X_row = (X_row.values - feature_means) / feature_std
+    zscore_normalized_X_row[zscore_normalized_X_row.isna()] = 0
+
+    for X_prime_no in range(zscore_normalized_X_primes.shape[0]):
+        scores = []
+        normalized_X_prime = zscore_normalized_X_primes.iloc[X_prime_no, :]
+        normalized_X_prime[normalized_X_prime.isna()] = 0
+        for func_name, func in params['loss_functions'].items():
+            if func_name == 'k_nearest_neighborhood':
+                loss = 1 - func(normalized_X_prime.values, params['label'], params['nbrs'], params['y_train'])
+            elif func_name == 'implausibility_single':
+                loss = func(normalized_X_prime.values, params['nbrs_same_label'], params['k'])
+            elif func_name == 'euclidean_categorical':
+                loss = func(zscore_normalized_X_row.values, normalized_X_prime.values, categorical_features, non_categorical_features)
+            elif func_name == 'hoem':
+                loss = func(X_row.values, X_primes.iloc[X_prime_no, :].values, feature_range, categorical_features,
+                            non_categorical_features)
+            else:
+                loss = func(zscore_normalized_X_row.values, normalized_X_prime.values)
+            scores.append(loss)
+        result.append(scores)
     return result
 
 
-def _calculate_score(score_functions: dict, parameters: dict, trained_model: RandomForestClassifier,
-                     X: pd.DataFrame, y: pd.Series, label, X_primes: pd.DataFrame):
-    result = {metric: [] for metric in score_functions.keys()}
-    for ind, X_prime in X_primes.iterrows():
-        if 'k_nearest_neighborhood' in score_functions:
-            k = parameters['k']
-            nbrs = parameters['nbrs']
-            func = score_functions['k_nearest_neighborhood']
-            result[f"k_nearest_neighborhood"].append(func(X_prime.values.reshape(1, -1), y, label, nbrs))
-        if 'n_random_neighborhood' in score_functions:
-            sigma = parameters['sigma']
-            n = parameters['n']
-            func = score_functions['n_random_neighborhood']
-            result[f'n_sigma_random_neighborhood'].append(func(X_prime.values.reshape(1, -1), trained_model, sigma, n))
+def _is_pareto_efficient(costs, return_mask=True):
+    """
+    Find the pareto-efficient points
+    :param costs: An (n_points, n_costs) array
+    :param return_mask: True to return a mask
+    :return: An array of indices of pareto-efficient points.
+        If return_mask is True, this will be an (n_points, ) boolean array
+        Otherwise it will be a (n_efficient_points, ) integer array of indices.
 
-    return result
+    From: https://stackoverflow.com/questions/32791911/fast-calculation-of-pareto-front-in-python
+    """
+    is_efficient = np.arange(costs.shape[0])
+    n_points = costs.shape[0]
+    next_point_index = 0  # Next index in the is_efficient array to search for
+    while next_point_index<len(costs):
+        nondominated_point_mask = np.any(costs<costs[next_point_index], axis=1)
+        nondominated_point_mask[next_point_index] = True
+        is_efficient = is_efficient[nondominated_point_mask]  # Remove dominated points
+        costs = costs[nondominated_point_mask]
+        next_point_index = np.sum(nondominated_point_mask[:next_point_index])+1
+    if return_mask:
+        is_efficient_mask = np.zeros(n_points, dtype = bool)
+        is_efficient_mask[is_efficient] = True
+        return is_efficient_mask
+    else:
+        return is_efficient
 
 
-def _tweak_features(X, label, classes, rf, feature_means, feature_eps_mul_std, decision_tree, positive_paths):
+def _tweak_features(X, label, classes, rf, feature_eps_mul_std, categorical_features, decision_tree, positive_paths):
+    """ Tweak features to find counterfactual candidates for each tree """
     predicted_classes_by_tree = np.array(decision_tree.predict(X.values), dtype=int)
     y_hat_tree = np.take(classes, predicted_classes_by_tree)
 
@@ -146,7 +327,24 @@ def _tweak_features(X, label, classes, rf, feature_means, feature_eps_mul_std, d
     for positive_path in positive_paths:
         X_prime = X_to_tweak.copy()
         for feature_id, sign, threshold in positive_path:
-            X_prime.iloc[:, feature_id] = threshold - feature_means[feature_id] + (sign * feature_eps_mul_std[feature_id])
+            feature_values = X_prime.iloc[:, feature_id]
+
+            if sign == 1:
+                rows_to_tweak = feature_values.loc[(feature_values < threshold)].index
+                if feature_id in categorical_features:
+                    X_prime.loc[rows_to_tweak, X_prime.columns[feature_id]] = np.ceil(threshold + (
+                        feature_eps_mul_std[feature_id]))
+                else:
+                    X_prime.loc[rows_to_tweak, X_prime.columns[feature_id]] = threshold + (
+                                feature_eps_mul_std[feature_id])
+            else:
+                rows_to_tweak = feature_values.loc[(feature_values >= threshold)].index
+                if feature_id in categorical_features:
+                    X_prime.loc[rows_to_tweak, X_prime.columns[feature_id]] = np.floor(threshold - (
+                        feature_eps_mul_std[feature_id]))
+                else:
+                    X_prime.loc[rows_to_tweak, X_prime.columns[feature_id]] = threshold - (
+                                feature_eps_mul_std[feature_id])
 
         y_hat_prime = rf.predict(X_prime)
         candidates_indices = np.where(y_hat_prime == label)[0]
@@ -157,6 +355,7 @@ def _tweak_features(X, label, classes, rf, feature_means, feature_eps_mul_std, d
 
 
 def _get_positive_paths(model: RandomForestClassifier, label: int):
+    """ Get all positive paths from Random Forest Classifier """
     positive_paths = []
     for decision_tree_classifier in model.estimators_:
         tree_paths = _get_positive_paths_from_decision_tree(decision_tree_classifier, label)
@@ -165,6 +364,7 @@ def _get_positive_paths(model: RandomForestClassifier, label: int):
 
 
 def _get_positive_paths_from_decision_tree(decision_tree_classifier: DecisionTreeClassifier, label: int):
+    """ Get all positive paths from a single Decision Tree Classifier"""
     tree = decision_tree_classifier.tree_
     nodes_values = tree.value
     # If root note doesn't contain desired label in children nodes, return empty list
@@ -178,26 +378,31 @@ def _get_positive_paths_from_decision_tree(decision_tree_classifier: DecisionTre
 
 
 def _recursively_search_tree(node_id: int, leaf_label: int, path_history: list, tree, tree_paths: list):
+    """ Recursively go through tree to find positive paths """
     children_left_node_id = tree.children_left[node_id]
     children_right_node_id = tree.children_right[node_id]
     nodes_values = tree.value
 
+    # Check if left children is leaf node
     if tree.children_left[children_left_node_id] != tree.children_right[children_left_node_id]:
+        # If no, check if it can have still a path to target label, then process it recursively
         if nodes_values[children_left_node_id, :, leaf_label] > 0:
             new_path_history = path_history.copy() + [[tree.feature[node_id], -1, tree.threshold[node_id]]]
             _recursively_search_tree(children_left_node_id, leaf_label, new_path_history, tree, tree_paths)
     else:
+        # If it is a leaf node, check if it contains target label
         if np.argmax(nodes_values[children_left_node_id, 0, :]) == leaf_label:
             new_path_history = path_history.copy() + [[tree.feature[node_id], -1, tree.threshold[node_id]]]
             tree_paths.append(new_path_history)
 
+    # Check if right children is leaf node
     if tree.children_left[children_right_node_id] != tree.children_right[children_right_node_id]:
+        # If no, check if it can have still a path to target label, then process it recursively
         if nodes_values[children_right_node_id, :, leaf_label] > 0:
             new_path_history = path_history.copy() + [[tree.feature[node_id], 1, tree.threshold[node_id]]]
             _recursively_search_tree(children_right_node_id, leaf_label, new_path_history, tree, tree_paths)
     else:
+        # If it is a leaf node, check if it contains target label
         if np.argmax(nodes_values[children_right_node_id, 0, :]) == leaf_label:
             new_path_history = path_history.copy() + [[tree.feature[node_id], 1, tree.threshold[node_id]]]
             tree_paths.append(new_path_history)
-
-    return False
