@@ -26,10 +26,16 @@ To install package:
 
 ## Manual installation (for developers)
 
+To run unittests:
+
+```
+cd tests
+python -m pytest
+```
+
 To build up a pywheel file:
 
 `python setup.py bdist_whee`
-
 
 ## Simple example on iris dataset
 
