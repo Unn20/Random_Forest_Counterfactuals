@@ -25,7 +25,7 @@ def visualize(rfe: RandomForestExplainer, X: pd.Series, X_prime: pd.Series, labe
     return result
 
 
-def evaluate_counterfactual(rfe: RandomForestExplainer, X: pd.Series, X_prime: pd.Series, k: int):
+def evaluate_counterfactual(rfe: RandomForestExplainer, X: pd.Series, X_prime: pd.Series, k=5):
     metrics = {}
     normalized_X = (X - rfe.X_train_stats['mean']) / rfe.X_train_stats['std']
 
@@ -56,7 +56,7 @@ def evaluate_counterfactual(rfe: RandomForestExplainer, X: pd.Series, X_prime: p
     return metrics
 
 
-def evaluate_counterfactual_set(rfe: RandomForestExplainer, X: pd.Series, X_primes: pd.DataFrame, k: int):
+def evaluate_counterfactual_set(rfe: RandomForestExplainer, X: pd.Series, X_primes: pd.DataFrame, k=5):
     metrics = {}
 
     metrics['mean_hoem'] = np.mean([heterogeneous_euclidean_overlap_metric(X.values, X_prime.values, rfe.X_train_stats['range'],

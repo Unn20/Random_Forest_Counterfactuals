@@ -34,14 +34,16 @@ left_vector_case_1 = [
     [1, 0.0, 1, 0.0],
     [0, 2.0, 1, 2.0],
     [6, 6.0, 6, 3.0],
-    [65, 10.0, 17, 15.0]
+    [65, 10.0, 17, 15.0],
+    [0, 0, 0, 0]
 ]
 
 right_vector_case_1 = [
     [0, 0.0, 0, 0.0],
     [0, 2.0, 1, 4.0],
     [5, 5.5, 5, 3.0],
-    [25, 12.5, 17, 12.5]
+    [25, 12.5, 17, 12.5],
+    [1, 15.0, 1, 20.0]
 ]
 
 def test_unmatched_components():
@@ -81,7 +83,7 @@ def test_heterogeneous_euclidean_overlap_metric():
     feature_range = np.array([999, 12.5, 999, 15.0])
     categorical_features = [0, 2]
     non_categorical_features = [1, 3]
-    ground_truth = np.array([math.sqrt(2), math.sqrt((2/15)**2), math.sqrt(1+(0.5/12.5)**2+1), math.sqrt(1+(2.5/12.5)**2+(2.5/15)**2)])
+    ground_truth = np.array([math.sqrt(2), math.sqrt((2/15)**2), math.sqrt(1+(0.5/12.5)**2+1), math.sqrt(1+(2.5/12.5)**2+(2.5/15)**2), 2.0])
     for no in range(len(ground_truth)):
         left, right = np.array(left_vector_case_1[no]), np.array(right_vector_case_1[no])
         result = heterogeneous_euclidean_overlap_metric(left, right, feature_range[:left.shape[0]], categorical_features, non_categorical_features)
@@ -156,7 +158,7 @@ def test_implausibility_single():
 
     cat_features = []
     non_cat_features = [0, 1]
-    feature_range = np.array([6.0, 5.0])
+    feature_range = np.array([6.0, 7.0])
 
     label = 1
     k=3
@@ -167,10 +169,10 @@ def test_implausibility_single():
         [1, -2],
         [0, -2]
     ]
-    true_scores = [(math.sqrt((2/6)**2+(6/5)**2)+math.sqrt((0/6)**2+(3/5)**2)+math.sqrt((4/6)**2+(5/5)**2))/3,
-                   (math.sqrt((2/6)**2+(1/5)**2)+math.sqrt((4/6)**2+(4/5)**2)+math.sqrt((0/6)**2+(2/5)**2))/3,
-                   (math.sqrt((2/6)**2+(0/5)**2)+math.sqrt((0/6)**2+(3/5)**2)+math.sqrt((4/6)**2+(1/5)**2))/3,
-                   (math.sqrt((3/6)**2+(0/5)**2)+math.sqrt((1/6)**2+(3/5)**2)+math.sqrt((5/6)**2+(1/5)**2))/3
+    true_scores = [(math.sqrt((2/6)**2+(6/7)**2)+math.sqrt((0/6)**2+(3/7)**2)+math.sqrt((4/6)**2+(5/7)**2))/3,
+                   (math.sqrt((2/6)**2+(1/7)**2)+math.sqrt((4/6)**2+(4/7)**2)+math.sqrt((0/6)**2+(2/7)**2))/3,
+                   (math.sqrt((2/6)**2+(0/7)**2)+math.sqrt((0/6)**2+(3/7)**2)+math.sqrt((4/6)**2+(1/7)**2))/3,
+                   (math.sqrt((3/6)**2+(0/7)**2)+math.sqrt((1/6)**2+(3/7)**2)+math.sqrt((5/6)**2+(1/7)**2))/3
                    ]
 
     nbrs = NearestNeighbors(n_neighbors=k, algorithm='ball_tree', metric=heterogeneous_euclidean_overlap_metric,

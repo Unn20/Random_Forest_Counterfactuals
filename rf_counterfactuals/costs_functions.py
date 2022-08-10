@@ -22,9 +22,9 @@ def heterogeneous_euclidean_overlap_metric(X: np.array, X_prime: np.array, featu
     """ https://axon.cs.byu.edu/~randy/jair/wilson2.html """
     result = 0.0
     result += unmatched_components(X[cat_features], X_prime[cat_features], eps=1e-4)
-    result += np.sum(np.power(np.divide(
+    result += np.sum(np.power(np.clip(np.divide(
         np.absolute(X[non_cat_features] - X_prime[non_cat_features]), feature_range[non_cat_features],
-        out=np.ones_like(X[non_cat_features], dtype=np.float), where=feature_range[non_cat_features] != 0.0), 2))
+        out=np.ones_like(X[non_cat_features], dtype=np.float), where=feature_range[non_cat_features] != 0.0), 0, 1), 2))
     return np.sqrt(result)
 
 
