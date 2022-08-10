@@ -17,7 +17,7 @@ This work is done for purpose of my master's thesis.
 
 ## Installation
 
-This package was tested only on Windows platform. However it should work on Linux platform as well.
+This package was tested on Windows 10 and Ubuntu 20.04 platforms.
 
 To install package:
 
