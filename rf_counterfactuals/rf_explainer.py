@@ -81,6 +81,9 @@ class RandomForestExplainer:
         else:
             raise Exception(f"Incorrect dimensions of X={X.ndim} (should be 2).")
 
+        if type(limit) != int and limit is not None:
+            raise Exception(f"Incorrect 'limit' parameter (limit={limit}). It must be integer type or None.")
+
         y_hat_ensemble = self.rf_model.predict(X)
         wrong_label = np.where(y_hat_ensemble != label)[0]
         X_wrong_label = X.iloc[wrong_label, :]
@@ -193,10 +196,10 @@ class RandomForestExplainer:
         result = []
         cfs_counter = 0
         for no, is_csf in enumerate(cfs_index):
-            if is_csf:
+            if is_csf and len(counterfactuals[cfs_counter]) > 0:
                 cfs = counterfactuals[cfs_counter]
                 cfs['_loss'] = costs[cfs_counter]
-                cfs['_loss'] = cfs['_loss'].apply(lambda x: x[0])
+                cfs['_loss'] = cfs['_loss'].apply(lambda x: x[0] if type(x) == list else x)
 
                 # Check actionability of counterfactual
                 cfs = cfs[cfs.apply(lambda row: _check_row_frozen_validity(original_rows.iloc[cfs_counter, :].values, row.values,
@@ -209,7 +212,10 @@ class RandomForestExplainer:
 
                 sorted_cfs = cfs.sort_values('_loss')
                 sorted_cfs = sorted_cfs.drop('_loss', axis=1)
-                result.append(sorted_cfs.iloc[:limit, :])
+                if limit is None:
+                    result.append(sorted_cfs.iloc[:, :])
+                else:
+                    result.append(sorted_cfs.iloc[:limit, :])
                 cfs_counter += 1
             else:
                 result.append(pd.DataFrame({}))
@@ -267,17 +273,18 @@ def _calculate_loss(params: dict, feature_range, feature_means, feature_std, cat
 
     for X_prime_no in range(zscore_normalized_X_primes.shape[0]):
         scores = []
+        X_prime = X_primes.iloc[X_prime_no, :]
         normalized_X_prime = zscore_normalized_X_primes.iloc[X_prime_no, :]
         normalized_X_prime[normalized_X_prime.isna()] = 0
         for func_name, func in params['loss_functions'].items():
             if func_name == 'k_nearest_neighborhood':
-                loss = 1 - func(normalized_X_prime.values, params['label'], params['nbrs'], params['y_train'])
+                loss = 1 - func(X_prime.values, params['label'], params['nbrs'], params['y_train'])
             elif func_name == 'implausibility_single':
-                loss = func(normalized_X_prime.values, params['nbrs_same_label'], params['k'])
+                loss = func(X_prime.values, params['nbrs_same_label'], params['k'])
             elif func_name == 'euclidean_categorical':
                 loss = func(zscore_normalized_X_row.values, normalized_X_prime.values, categorical_features, non_categorical_features)
             elif func_name == 'hoem':
-                loss = func(X_row.values, X_primes.iloc[X_prime_no, :].values, feature_range, categorical_features,
+                loss = func(X_row.values, X_prime.values, feature_range, categorical_features,
                             non_categorical_features)
             else:
                 loss = func(zscore_normalized_X_row.values, normalized_X_prime.values)
