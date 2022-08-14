@@ -1,7 +1,8 @@
 import pytest
 import numpy as np
 
-from rf_counterfactuals.scores_functions import *
+from rf_counterfactuals.single_cf_costs_functions import *
+from rf_counterfactuals.multi_cf_costs_functions import *
 
 def test_k_nearest_neighborhood():
     X = np.array([[-1, -1], [2, -1], [3, -2], [1, 1], [2, 1], [3, 2], [5, -1], [1, -3]])

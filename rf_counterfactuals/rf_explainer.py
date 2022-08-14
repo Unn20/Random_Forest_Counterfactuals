@@ -9,8 +9,8 @@ from joblib import Parallel, delayed
 import itertools
 import sys
 
-from costs_functions import *
-from scores_functions import *
+from single_cf_costs_functions import *
+from multi_cf_costs_functions import *
 
 class RandomForestExplainer:
     available_loss_functions = {

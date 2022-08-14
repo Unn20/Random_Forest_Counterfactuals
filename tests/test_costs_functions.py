@@ -1,6 +1,7 @@
 import pytest
 
-from rf_counterfactuals.costs_functions import *
+from rf_counterfactuals.single_cf_costs_functions import *
+from rf_counterfactuals.multi_cf_costs_functions import *
 
 left_vector_case_0 = [
     [],
