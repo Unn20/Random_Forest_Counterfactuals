@@ -15,9 +15,9 @@ def visualize(rfe: RandomForestExplainer, X: pd.Series, X_prime: pd.Series, labe
     X_prime = X_prime.round(3)
     difference = difference.round(3)
     if label_encoder_dict and len(rfe.categorical_features) > 0:
-        X.loc[rfe.categorical_features] = X.loc[rfe.categorical_features].to_frame(0).apply(lambda x: label_encoder_dict[x.name].inverse_transform(x)[0], axis=1)
-        X_prime.loc[rfe.categorical_features] = X_prime.loc[rfe.categorical_features].to_frame(0).apply(lambda x: label_encoder_dict[x.name].inverse_transform(x.astype(int))[0], axis=1)
-        difference.loc[rfe.categorical_features] = difference.loc[rfe.categorical_features].apply(lambda x: 1.0 if x != 0.0 else 0.0)
+        X[rfe.categorical_features] = X[rfe.categorical_features].to_frame(0).apply(lambda x: label_encoder_dict[x.name].inverse_transform(x)[0], axis=1)
+        X_prime[rfe.categorical_features] = X_prime[rfe.categorical_features].to_frame(0).apply(lambda x: label_encoder_dict[x.name].inverse_transform(x.astype(int))[0], axis=1)
+        difference[rfe.categorical_features] = difference[rfe.categorical_features].apply(lambda x: 1.0 if x != 0.0 else 0.0)
     result = pd.concat([X.T, X_prime.T, difference.T, constraints.T], axis=1, ignore_index=True)
     result.columns = ["X", "X'", "difference", "constraints"]
     return result
