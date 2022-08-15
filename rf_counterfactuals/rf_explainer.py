@@ -332,9 +332,6 @@ def _tweak_features(X, label, classes, rf, feature_eps_mul_std, categorical_feat
     X_tweaked_candidates = [[] for _ in range(X.shape[0])]
 
     for positive_path in positive_paths:
-        # If there are no samples to tweak
-        if len(X_to_tweak) == 0:
-            continue
         X_prime = X_to_tweak.copy()
         for feature_id, sign, threshold in positive_path:
             feature_values = X_prime.iloc[:, feature_id]
