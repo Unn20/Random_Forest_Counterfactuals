@@ -227,7 +227,7 @@ class RandomForestExplainer:
         result = []
         cfs_counter = 0
         for no, is_csf in enumerate(cfs_index):
-            if is_csf:
+            if is_csf and len(counterfactuals[cfs_counter]) > 0:
                 cfs = counterfactuals[cfs_counter]
 
                 to_process = np.ones(cfs.shape[0], dtype=bool)
@@ -242,10 +242,21 @@ class RandomForestExplainer:
 
                 cfs = cfs.iloc[to_process, :]
 
+                if len(cfs) == 0:
+                    # If there are no candidates, continue the loop
+                    result.append(pd.DataFrame({}))
+                    continue
+
                 cfs_costs = np.array(costs[cfs_counter])
                 pareto_mask = _is_pareto_efficient(cfs_costs[to_process], return_mask=True)
+                cfs = cfs.iloc[pareto_mask, :]
 
-                result.append(cfs.iloc[pareto_mask, :])
+                if len(cfs) == 0:
+                    # If there are no candidates, continue the loop
+                    result.append(pd.DataFrame({}))
+                    continue
+
+                result.append(cfs)
                 cfs_counter += 1
             else:
                 result.append(pd.DataFrame({}))
