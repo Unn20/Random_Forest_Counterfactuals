@@ -1,5 +1,6 @@
 # pycharm
 .idea/
+**/__pycache__/
 
 # build files and dirs
 build/
@@ -12,6 +13,7 @@ rf_counterfactuals.egg-info
 venv/
 
 # Examples (jupyter notebook)
-examples/.ipynb_checkpoints
+examples/.ipynb_checkpoints/
+experiments/.ipynb_checkpoints/
 
 main.py
